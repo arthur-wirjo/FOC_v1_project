@@ -60,10 +60,10 @@
           "hatch_smoothing_level": 0,
           "hatch_smoothing_value": 0.1,
           "hatch_thickness": 1.0,
-          "min_clearance": 0.15,
-          "min_island_area": 10.0,
+          "min_clearance": 0.5,
+          "min_island_area": 0.0013161349,
           "min_thickness": 0.25,
-          "pad_connection": 1,
+          "pad_connection": 2,
           "remove_islands": 0,
           "thermal_relief_gap": 0.5,
           "thermal_relief_spoke_width": 0.5
@@ -78,59 +78,11 @@
       ],
       "drc_exclusions": [
         [
-          "duplicate_footprints|135400000|91715000|90e9b46f-3f42-4ce2-a2ed-48ee506a3e4d|8ad137c7-6fcf-4283-8e4f-2dc4a68d2510",
-          ""
-        ],
-        [
-          "extra_footprint|101086000|70550000|4ce67f78-4b12-4f3f-8546-ec357ae5bb68|00000000-0000-0000-0000-000000000000",
-          ""
-        ],
-        [
-          "extra_footprint|101086000|98834000|a34b4405-be71-420a-b401-f9903238432c|00000000-0000-0000-0000-000000000000",
-          ""
-        ],
-        [
-          "extra_footprint|129370000|70550000|e7e83356-dcbb-40a7-9beb-92810ab297aa|00000000-0000-0000-0000-000000000000",
-          ""
-        ],
-        [
-          "extra_footprint|129370000|98834000|4465531f-6ca0-4040-b749-6d7f69b067f8|00000000-0000-0000-0000-000000000000",
-          ""
-        ],
-        [
-          "extra_footprint|135399919|77686018|8ad137c7-6fcf-4283-8e4f-2dc4a68d2510|00000000-0000-0000-0000-000000000000",
-          ""
-        ],
-        [
-          "extra_footprint|135400000|91715000|90e9b46f-3f42-4ce2-a2ed-48ee506a3e4d|00000000-0000-0000-0000-000000000000",
-          ""
-        ],
-        [
-          "lib_footprint_mismatch|135399919|77686018|8ad137c7-6fcf-4283-8e4f-2dc4a68d2510|00000000-0000-0000-0000-000000000000",
-          ""
-        ],
-        [
-          "lib_footprint_mismatch|135400000|91715000|90e9b46f-3f42-4ce2-a2ed-48ee506a3e4d|00000000-0000-0000-0000-000000000000",
-          ""
-        ],
-        [
           "lib_footprint_mismatch|153600000|116300000|ffcab5fc-c9f0-4b23-b9e4-d58787836680|00000000-0000-0000-0000-000000000000",
           ""
         ],
         [
           "lib_footprint_mismatch|161177300|68249990|7187008d-1e6d-49d6-b2db-9a32a0fc54d0|00000000-0000-0000-0000-000000000000",
-          ""
-        ],
-        [
-          "net_conflict|153600000|115300000|99c0360b-ac11-447a-b6d4-57d284a3291b|00000000-0000-0000-0000-000000000000",
-          ""
-        ],
-        [
-          "net_conflict|153600000|115300000|b7ebc75d-e402-4524-9ab5-e852cbaa0636|00000000-0000-0000-0000-000000000000",
-          ""
-        ],
-        [
-          "net_conflict|153600000|115300000|da6c8813-1496-4b58-8350-11fa3c3cccf4|00000000-0000-0000-0000-000000000000",
           ""
         ]
       ],
@@ -848,7 +800,7 @@
     "last_paths": {
       "idf": "",
       "netlist": "",
-      "plot": "C:/Users/arthu/Documents/FOC Project/FOC_V1/FOC_V1_GerberFiles/",
+      "plot": "../FOC_V1.1_GerberFiles/",
       "specctra_dsn": "",
       "vrml": ""
     },

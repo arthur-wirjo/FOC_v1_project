@@ -1,0 +1,4 @@
+(sym_lib_table
+	(version 7)
+	(lib (name "FOC_sym_lib") (type "KiCad") (uri "${KIPRJMOD}/FOC_sym_lib.kicad_sym") (options "") (descr ""))
+)

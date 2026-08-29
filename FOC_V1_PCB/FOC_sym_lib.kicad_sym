@@ -2182,24 +2182,6 @@
 				)
 			)
 			(pin unspecified line
-				(at 40.64 -2.54 180)
-				(length 7.62)
-				(name "D"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-				(number "7"
-					(effects
-						(font
-							(size 1.27 1.27)
-						)
-					)
-				)
-			)
-			(pin unspecified line
 				(at 40.64 0 180)
 				(length 7.62)
 				(name "EPAD"
@@ -2210,6 +2192,26 @@
 					)
 				)
 				(number "8"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+		)
+		(symbol "IRFS7530TRL7PP_1_1"
+			(pin unspecified line
+				(at 40.64 -2.54 180)
+				(length 7.62)
+				(name "S"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "7"
 					(effects
 						(font
 							(size 1.27 1.27)

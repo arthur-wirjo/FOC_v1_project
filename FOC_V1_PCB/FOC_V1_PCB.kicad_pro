@@ -800,7 +800,7 @@
     "last_paths": {
       "idf": "",
       "netlist": "",
-      "plot": "../FOC_V1.1_GerberFiles/",
+      "plot": "../Gerber Files/FOC_V1.2_GerberFiles/",
       "specctra_dsn": "",
       "vrml": ""
     },

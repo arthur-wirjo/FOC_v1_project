@@ -802,6 +802,7 @@
       "netlist": "",
       "plot": "../Gerber Files/FOC_V1.3_GerberFiles/",
       "specctra_dsn": "",
+      "step": "",
       "vrml": ""
     },
     "page_layout_descr_file": ""
@@ -951,7 +952,7 @@
         "uuid": "61926520-25d5-4f8c-a3ff-531f2bbad32a"
       }
     ],
-    "used_designators": "SW2,J5,J11-12",
+    "used_designators": "J5,J11-12,SW2",
     "variants": []
   },
   "sheets": [

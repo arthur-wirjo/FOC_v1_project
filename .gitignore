@@ -1,0 +1,21 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# STM32CubeIDE / Eclipse workspace junk
+.metadata/
+
+# Build outputs
+Debug/
+Release/
+
+# OS/editor junk
+.DS_Store
+Thumbs.db

@@ -1,6 +1,7 @@
-<img width="450" alt="FOC_v1_PCB_pic3" src="https://github.com/user-attachments/assets/0803dace-8d7f-4927-af71-1bed551aa274" />
-<img width="450" alt="FOC_v1_PCB_pic2" src="https://github.com/user-attachments/assets/c6a2957c-8341-45c0-a1b1-4b36ab1cfa74" />
-<img width="450" alt="foc_v1 1_pic" src="https://github.com/user-attachments/assets/36684214-23c3-4fa2-9618-92463f690bc7" />
+<img width="450" alt="FOC_v1 3_pic" src="https://github.com/user-attachments/assets/d8da7c35-ac1d-484f-9041-603ca0addf4d" />
+<img width="450" alt="FOC_v1 3_pic2" src="https://github.com/user-attachments/assets/219bfe0c-1c2c-4cdf-8738-d26fb6f9e2ab" />
+<img width="450" alt="FOC_v1 3_setup2" src="https://github.com/user-attachments/assets/b3ec1fc4-616c-4bb9-b928-0f4e2a09ef9d" />
+<img width="450" alt="FOC_v1 0-1 2" src="https://github.com/user-attachments/assets/ff5e3c55-ffe5-4131-902a-74e42b688a45" />
 
 # DIY VESC-Compatible FOC Motor Controller
 
@@ -12,14 +13,16 @@ I started this project to deeply understand the hardware architecture of modern,
 
 The system is split into a 4-layer main power board (handling the MCU and 60V power stage) and a separate 2-layer magnetic encoder board mounted directly to the motor. This approach kept the overall footprint compact and reduced manufacturing costs.
 
+As the project progressed, it evolved beyond "build a VESC clone" into writing a full custom bare-metal FOC firmware stack from scratch — more on why below.
+
 ## Key Features
 
-* **VESC Firmware Compatible:** Architecture designed around the STM32F405 and DRV8301 to support open-source FOC firmware.
-* **High-Power Stage:** 60V-rated MOSFETs capable of handling 10S Li-Po battery voltages and regenerative braking spikes.
+* **60V Power Stage:** 60V-rated MOSFETs capable of handling 10S Li-Po battery voltages and regenerative braking spikes.
 * **Precision Current Sensing:** 1mΩ shunt resistors utilizing strict Kelvin connections and RC-filtered differential amplifiers.
 * **Isolated Telemetry:** ADuM3160-based USB isolation to protect the host computer from catastrophic 60V transients during live tuning.
 * **Robust Communication:** TJA1051T/3 CAN bus transceiver with 120Ω termination for robot networking.
 * **Modular Encoder:** Separate 2-layer AS5048A magnetic encoder PCB using JST-GH SMD connectors.
+* **Custom Bare-Metal Firmware:** Fully custom STM32 firmware (not VESC firmware) with FreeRTOS-managed telemetry/state handling, interrupt-driven current sensing, and FOC running inside the ADC conversion-complete callback.
 
 ## Hardware
 
@@ -48,26 +51,123 @@ The board utilizes a 4-layer stackup to safely separate high-current paths from 
 
 ## Challenges and Lessons Learned
 
-Building a high-power motor controller from scratch provided an intense, hands-on education in hardware debugging. 
+Building a high-power motor controller from scratch provided an intense, hands-on education in hardware and firmware debugging.
 
 ### Solder Wicking and Clearance Tolerances (V1.0)
 After freshly soldering the V1.0 PCB, I felt an unusually strong resistance when I tried to rotate the motor by hand. I learned this is caused by back-EMF when phase wires are shorted together. Multimeter testing confirmed that V++, GND, and all three motor phases were dead-shorted.
 
-Upon inspection, I realized the clearance between my GND copper pour and the soldering pads for V++ and the phase wires was very small (0.15mm). When hand-soldering the massive motor wires, the liquid solder easily wicked across that tiny gap into the GND pour. 
+Upon inspection, I realized the clearance between my GND copper pour and the soldering pads for V++ and the phase wires was very small (0.15mm). When hand-soldering the massive motor wires, the liquid solder easily wicked across that tiny gap into the GND pour.
 
 For V1.1, I redesigned the board with strict Net Classes, increasing the clearance around high-power wire pads to 0.6mm to create a physical "moat", while keeping the MCU digital clearance at 0.15mm for dense routing.
 
 ### The "Bad Internet Symbol" Trap (V1.1)
-After successfully assembling V1.1 with new stencils and corrected clearances, the board still exhibited a short between V++, GND, and the phase wires. 
+After successfully assembling V1.1 with new stencils and corrected clearances, the board still exhibited a short between V++, GND, and the phase wires.
 
-I started isolating the issue by desoldering components one by one. I checked a bare V1.0 board and found no shorts, meaning the layout itself wasn't fundamentally shorted. I desoldered the MCU and gate driver—the short was still there. Finally, I desoldered the high-side MOSFETs one by one. Removing the last high-side MOSFET finally severed the short between V++ and the motor phases.
+I started isolating the issue by desoldering components one by one. I checked a bare V1.0 board and found no shorts, meaning the layout itself wasn't fundamentally shorted. I desoldered the MCU and gate driver — the short was still there. Finally, I desoldered the high-side MOSFETs one by one. Removing the last high-side MOSFET finally severed the short between V++ and the motor phases.
 
-I probed the desoldered MOSFET and found a short between Pin 7 and the Source pins (Pins 2-6). Initially, I thought the MOSFET had overheated and failed closed during hot-plate reflow. However, I looked into the Infineon datasheet and saw a catastrophic error in the third-party CAD symbol I had downloaded. 
+I probed the desoldered MOSFET and found a short between Pin 7 and the Source pins (Pins 2-6). Initially, I thought the MOSFET had overheated and failed closed during hot-plate reflow. However, I looked into the Infineon datasheet and saw a catastrophic error in the third-party CAD symbol I had downloaded.
 
 The symbol incorrectly labeled Pin 7 as "Drain". In reality, the D2PAK-7 package uses the large back EPAD as the Drain, and Pins 2 through 7 are *all* Source pins. Because I followed the flawed schematic, my PCB layout drew a massive copper pour that physically connected the Drain (EPAD) to the Source (Pin 7). The PCB itself was shorting the circuit by design, while the MOSFETs were actually unharmed.
 
 **Lesson learned:** Never trust third-party CAD footprints without verifying against the manufacturer's datasheet.
 
+### The USB D+/D- Swap (V1.2)
+With the phase-short issue resolved, V1.2 soldered up cleanly with no shorts between V++, GND, or the phase wires. After hours of VESC firmware macro configuration, I successfully flashed VESC firmware onto the board. However, the board never enumerated over USB — nothing populated on the host PC.
+
+I re-checked the firmware configuration and it looked correct, so I moved to the hardware. It turned out to be a wiring mistake on my end, though the confusing pin naming in the schematic symbol didn't help: instead of connecting DP1↔DP2 and DN1↔DN2 (the isolator-side and MCU-side USB differential pairs), I had wired DP1↔DN1 and DP2↔DN2 — crossing the differential pairs instead of linking them straight through. I corrected this for V1.2's respin.
+
+### The Mysterious Non-Enumerating USB (V1.3)
+V1.3 fixed the DP/DN wiring mistake. USB still did not enumerate.
+
+At this point I was confident the hardware was correct, so I wrote a minimal bare-metal STM32 firmware (via STM32CubeMX, STM32CubeIDE, and STM32CubeProgrammer) with nothing but a USB CDC "hello world" to test enumeration independently of VESC firmware. It worked immediately — the host PC detected the board and the virtual COM port came up cleanly. This confirmed the hardware (including the USB isolation and the DP/DN fix) was fine, and the problem was somewhere inside VESC firmware itself.
+
+After a weekend of digging, my working theory is that VESC firmware assumes VBUS sensing on a specific pin by default, which on my board doesn't correspond to an actual VBUS-sensing net — that pin (PA9 / TIM1_CH2) is repurposed as a motor PWM output on my hardware. If VESC firmware is waiting on a VBUS-sense signal that physically doesn't exist on my board, USB enumeration would never complete, since the firmware assumes the connection is dead.
+
+Rather than dig further into VESC's fairly large and unfamiliar codebase to patch around this, I decided to use this as an opportunity to learn embedded systems more deeply from first principles by writing my own bare-metal FOC firmware from scratch.
+
+## Custom Firmware Development
+
+Since abandoning VESC firmware, I've been building a custom bare-metal firmware stack using STM32CubeMX, STM32CubeIDE, and FreeRTOS (for telemetry and state management), with the actual FOC control loop implemented as a hardware-timer/ADC-interrupt-driven routine.
+
+### MCU Pinout
+
+**PWM (TIM1, Center-Aligned, Complementary Outputs)**
+| Pin | Function |
+|---|---|
+| PA8 | TIM1_CH1 |
+| PA9 | TIM1_CH2 |
+| PA10 | TIM1_CH3 |
+| PB13 | TIM1_CH1N |
+| PB14 | TIM1_CH2N |
+| PB15 | TIM1_CH3N |
+
+**ADC (Current & Voltage Sensing)**
+| Pin | Function |
+|---|---|
+| PA0 | ADC1_IN0 — Phase A Current |
+| PA1 | ADC2_IN1 — Phase C Current |
+| PA2 | ADC3_IN2 — VBUS Voltage Sensing |
+| PA3 | ADC3_IN3 — MOSFET Temperature |
+
+**DRV8301 Gate Driver (SPI1)**
+| Pin | Function |
+|---|---|
+| PC1 | EN_GATE |
+| PC2 | DC_CAL |
+| PC0 | nFAULT (EXTI0) |
+| PB3 | SPI1_SCK |
+| PB4 | SPI1_MISO |
+| PB5 | SPI1_MOSI |
+| PD2 | CS |
+
+**Encoder (SPI3)**
+| Pin | Function |
+|---|---|
+| PC10 | SPI3_SCK |
+| PC11 | SPI3_MISO |
+| PC12 | SPI3_MOSI |
+| PA15 | CS |
+
+**CAN**
+| Pin | Function |
+|---|---|
+| PB8 | CAN1_RX |
+| PB9 | CAN1_TX |
+
+**USB**
+| Pin | Function |
+|---|---|
+| PA11 | D- |
+| PA12 | D+ |
+
+> **Critical note:** VBUS sensing on PA9 is intentionally *not* used — PA9 is a motor PWM pin on this board (see the V1.3 debugging story above). USB is forced to enumerate without relying on VBUS sensing.
+
+### STM32CubeMX Configuration Notes
+* Deadtime configured on the PWM timer to prevent shoot-through.
+* Center-aligned PWM mode for reduced current ripple.
+* ADC sampling is hardware-synchronized to PWM switching using TIM1's "Update Event" as the ADC "Trigger Event Selection," so current is always sampled at a consistent point in the switching cycle.
+* Third phase current is reconstructed using Kirchhoff's Current Law rather than measured directly (only two shunts are sensed).
+* ADC current sensing uses **injected conversion mode** so it can be hardware-triggered directly by the timer.
+* ADC interrupt enabled in NVIC settings for the current-sensing ADC.
+* Encoder SPI configured with DMA in full-duplex master mode.
+* USB configured using the USB CDC class for direct serial communication with the host PC.
+
+### Firmware Development Progress
+1. ✅ Pinout and hardware configuration in CubeMX
+2. ✅ USB CDC enumeration working
+3. ✅ DRV8301 register read helper function + gate driver wake-up sequence
+4. ✅ SPI encoder DMA callback
+5. ✅ Open-loop SPWM commutation and tuning
+6. ✅ DRV8301 register write helper function for current amplifier gain configuration
+7. ✅ ADC hardware interrupt callback for current sensing (`HAL_ADC_ConvCpltCallback`)
+8. 🔄 **In progress:** FOC algorithm implemented inside `HAL_ADC_ConvCpltCallback` — written, not yet tested on hardware
+
+### Current Firmware State
+* Open-loop SPWM commutation is working on hardware.
+* Current sensing is functional, though signal quality/noise still needs improvement (likely amplifier gain tuning and/or additional filtering).
+* Closed-loop FOC logic has been written into the ADC interrupt callback but has **not yet been tested** on hardware — paused due to time constraints from other ongoing commitments. This is the immediate next step.
+
 ## Current Status
-* **V1.0 & V1.1:** Deprecated (Used for footprint verification and assembly practice).
-* **V1.2:** Currently in the layout phase, implementing corrected D2PAK-7 footprints and optimized via-stitching for the power stage.
+* **V1.0 & V1.1:** Deprecated — used for footprint verification and short-circuit debugging (solder wicking clearance issue, mislabeled MOSFET footprint).
+* **V1.2:** Deprecated — resolved the phase-short issues from V1.0/V1.1, but had a USB differential pair wiring mistake (DP/DN crossed) that prevented USB enumeration.
+* **V1.3:** Current hardware revision. USB wiring fixed and verified working via custom bare-metal USB CDC test firmware. VESC firmware was found to be incompatible with this board's VBUS-sensing configuration, prompting a pivot to fully custom bare-metal firmware. Open-loop commutation and current sensing are functional on this hardware; closed-loop FOC is implemented but not yet validated.

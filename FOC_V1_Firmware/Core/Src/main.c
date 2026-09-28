@@ -49,7 +49,7 @@ osThreadId_t StateTaskHandle;
 const osThreadAttr_t StateTask_attributes = {
   .name = "StateTask",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityHigh,
 };
 /* Definitions for TelemetryTask */
 osThreadId_t TelemetryTaskHandle;
@@ -63,10 +63,31 @@ const osThreadAttr_t TelemetryTask_attributes = {
 uint16_t as5048a_tx_buffer = 0xFFFF;
 uint16_t as5048a_rx_buffer = 0x0000;
 volatile uint8_t start_motor = 0;
+// ADC
 volatile uint16_t raw_adc_a, raw_adc_c;
 volatile float offset_a = 2048.0f;
 volatile float offset_c = 2048.0f;
-volatile float theta = 0.0f;
+// Global FOC variables for telemetry
+volatile float global_theta_elec = 0.0f;
+volatile float i_a, i_b, i_c;
+volatile float i_d, i_q;
+volatile float v_d, v_q;
+// Current PI Controller states
+volatile float integral_d = 0.0f;
+volatile float integral_q = 0.0f;
+volatile float target_id = 0.0f;
+volatile float target_iq = 0.0f;
+// Velocity PI Controller states
+volatile float current_vel_rads = 0.0f;
+volatile float target_vel_rads = 10.0f; // target 10 rad/s (~95rpm) for testing
+volatile float prev_theta_mech = 0.0f;
+volatile float vel_integral = 0.0f;
+// Timing constant (168MHz clock and 4199 timer period -> 168Mhz/(2*4200) = 20kHz PWM)
+const float DT = 0.00005f;
+// Motor constants
+const float POLE_PAIRS = 20.0f; // Eaglepower 90kv motor
+const float PI_CONST = 3.14159265359f;
+volatile float mech_offset = 0.0f; // set it to zero-angle calibration
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -88,6 +109,59 @@ void StartTelemetryTask(void *argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+// Wrap angle helper function
+static inline float wrap_angle(float angle) {
+	while (angle > PI_CONST) {
+		angle -= (2.0f * PI_CONST);
+	}
+	while (angle < -PI_CONST) {
+		angle += (2.0f * PI_CONST);
+	}
+	return angle;
+}
+
+// fast sin & cos function
+static inline float fast_sin(float x) {
+	x = wrap_angle(x);
+	float sin_x;
+	if (x < 0.0f) {
+		sin_x = 1.27323954f * x + 0.405284735f * x * x;
+		if (sin_x < 0.0f) {
+			sin_x = 0.225f * (sin_x * -sin_x - sin_x) + sin_x;
+		} else {
+			sin_x = 0.225f * (sin_x * sin_x - sin_x) + sin_x;
+		}
+	} else {
+		sin_x = 1.27323954f * x - 0.405284735f * x * x;
+		if (sin_x < 0.0f) {
+			sin_x = 0.225f * (sin_x * -sin_x - sin_x) + sin_x;
+		} else {
+			sin_x = 0.225f * (sin_x * sin_x - sin_x) + sin_x;
+		}
+	}
+	return sin_x;
+}
+static inline float fast_cos(float x) {
+	return fast_sin(x + 1.570796327f); // sin(x + pi/2)
+}
+
+// Fast Inverse Square Root for clamping v_d & v_q (calculates 1/sqrt(x))
+static inline float fast_inv_sqrt(float number) {
+  union {
+    float f;
+    uint32_t i;
+  } conv;
+
+  float x2;
+  const float threehalfs = 1.5F;
+
+  x2 = number * 0.5F;
+  conv.f = number;
+  conv.i = 0x5f3759df - (conv.i >> 1);
+  conv.f = conv.f * (threehalfs - (x2 * conv.f * conv.f));
+  return conv.f;
+}
 /* USER CODE END 0 */
 
 /**
@@ -517,6 +591,153 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
 		// Read the raw injected ADC values (0 to 4095)
 		raw_adc_a = HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_1);
 		raw_adc_c = HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_1);
+
+		if (start_motor == 0) {
+			// motor off: reset integral and set 50% duty cycle
+			integral_d = 0.0f;
+			integral_q = 0.0f;
+      vel_integral = 0.0f;
+			TIM1->CCR1 = 2099;
+			TIM1->CCR2 = 2099;
+      TIM1->CCR3 = 2099;
+
+			// trigger next SPI DMA for encoder so its ready when we start
+			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, GPIO_PIN_RESET);
+			HAL_SPI_TransmitReceive_DMA(&hspi3, (uint8_t*)&as5048a_tx_buffer, (uint8_t*)&as5048a_rx_buffer, 1);
+			return;
+		}
+
+		// convert raw ticks to amps
+		// assume 2048 ticks is exactly 0 Amps, gain = 20, and R_shunt = 0.001
+	    // multiplier = 3.3V / (4095 * gain * R_shunt) = 3.3 / (4095 * 20 * 0.001) = 0.040293f
+		i_a = ((float)raw_adc_a - offset_a) * 0.040293f;
+		i_c = ((float)raw_adc_c - offset_c) * 0.040293f;
+		// kirchoff's law: i_a + i_b + i_c = 0
+		i_b = -(i_a + i_c);
+
+		// Get electrical angle from last SPI DMA transfer
+		uint16_t raw_angle = 16383 - (as5048a_rx_buffer & 0x3FFF);
+		float theta_mech = ((float)raw_angle / 16384.0f) * (2.0f * PI_CONST);
+		float theta_elec = (theta_mech - mech_offset) * POLE_PAIRS;
+		// wrap angle 0 to 2PI
+		while (theta_elec > 2.0f * PI_CONST) {
+			theta_elec -= 2.0f * PI_CONST;
+		}
+		while (theta_elec < 0.0f) {
+			theta_elec += 2.0f * PI_CONST;
+		}
+		global_theta_elec = theta_elec;
+
+		float c = fast_cos(theta_elec);
+		float s = fast_sin(theta_elec);
+
+    // Velocity calculation with low pass filter
+    float delta_theta = wrap_angle(theta_mech - prev_theta_mech);
+    prev_theta_mech = theta_mech;
+    float raw_vel = delta_theta/DT;
+    float alpha = 0.01f; // use 0.01 for now, velocity should be relatively smooth
+    current_vel_rads = (alpha * raw_vel) + ((1.0f - alpha) * current_vel_rads);
+
+    // Velocity PI Controller (TO BE TUNED)
+    float Kp_vel = 0.02f;
+    float Ki_vel = 0.0005f;
+    float max_iq = 1.0f; // Max current 1A for now for safety
+    
+    float err_vel = target_vel_rads - current_vel_rads;
+    vel_integral += err_vel * Ki_vel;
+    
+    // Velocity Anti-windup
+    if (vel_integral > max_iq) vel_integral = max_iq;
+    if (vel_integral < -max_iq) vel_integral = -max_iq;
+
+    // Velocity PI control
+    target_iq = (Kp_vel * err_vel) * vel_integral;
+
+    // Clamp target_iq for safety
+    if (target_iq > max_iq) target_iq = max_iq;
+    if (target_iq < -max_iq) target_iq = -max_iq;
+
+		// Clarke Transform
+		float i_alpha = i_a;
+		float i_beta = (0.577350269f * i_a) + (1.154700538f * i_b);
+
+		// Park Transform
+		i_d = (i_alpha * c) + (i_beta * s);
+		i_q = -(i_alpha * s) + (i_beta * c);
+
+		// Current PI Controllers (TO BE TUNED)
+		float Kp_cur = 0.05f;
+		float Ki_curr = 0.001f;
+		float v_max = 0.2f; // max duty cycle variance
+
+		float err_d = target_id - i_d;
+		float err_q = target_iq - i_q;
+
+		integral_d += err_d * Ki_curr;
+		integral_q += err_q * Ki_curr;
+
+		// Current Anti-windup
+		if (integral_d > v_max) integral_d = v_max;
+		if (integral_d < -v_max) integral_d = -v_max;
+		if (integral_q > v_max) integral_q = v_max;
+		if (integral_q < -v_max) integral_q = -v_max;
+
+		// Current PI control
+		v_d = (Kp_cur * err_d) + integral_d;
+		v_q = (Kp_cur * err_q) + integral_q;
+
+    // Circular voltage limiting (clamping v_d & v_q)
+    float v_mag_sq = (v_d * v_d) + (v_q * v_q);
+    float v_max_sq = v_max * v_max;
+
+    if (v_mag_sq > v_max_sq) {
+      // calculate scalinng factor (v_max / sqrt(v_d^2 + v_q^2))
+      float scale = v_max * fast_inv_sqrt(v_mag_sq);
+      v_d *= scale;
+      v_q *= scale;
+    }
+
+		// Inverse Park Transform
+		float v_alpha = (v_d * c) - (v_q * s);
+		float v_beta = (v_d * s) + (v_q * c);
+
+		// Inverse Clarke Transform & SVPWM (Saddle Injection)
+		float v_a = v_alpha;
+		float v_b = -0.5f * v_alpha + 0.866025403f * v_beta;
+		float v_c = -0.5f * v_alpha - 0.866025403f * v_beta;
+
+		// find min and max for saddle injection
+		float v_min_val = v_a;
+		if (v_b < v_min_val) v_min_val = v_b;
+		if (v_c < v_min_val) v_min_val = v_c;
+
+		float v_max_val = v_a;
+		if (v_b > v_max_val) v_max_val = v_b;
+		if (v_c > v_max_val) v_max_val = v_c;
+
+		float v_offset = -0.5f * (v_max_val + v_min_val);
+
+		// calculate duty cycles (0.0 to 1.0)
+		float duty_a = 0.5f + (v_a + v_offset);
+		float duty_b = 0.5f + (v_b + v_offset);
+		float duty_c = 0.5f + (v_c + v_offset);
+
+		// clamp duties to 0.05 - 0.95 to allow drv8301 bootstrap capacitors to charge
+		if (duty_a > 0.95f) duty_a = 0.95f;
+		if (duty_a < 0.05f) duty_a = 0.05f;
+		if (duty_b > 0.95f) duty_b = 0.95f;
+		if (duty_b < 0.05f) duty_b = 0.05f;
+		if (duty_c > 0.95f) duty_c = 0.95f;
+		if (duty_c < 0.05f) duty_c = 0.05f;
+
+		// write duty cycles to timers
+		TIM1->CCR1 = (uint32_t)(duty_a * 4199.0f);
+		TIM1->CCR2 = (uint32_t)(duty_b * 4199.0f);
+		TIM1->CCR3 = (uint32_t)(duty_c * 4199.0f);
+
+		// trigger next SPI DMA transfer
+		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, GPIO_PIN_RESET);
+		HAL_SPI_TransmitReceive_DMA(&hspi3, (uint8_t*)&as5048a_tx_buffer, (uint8_t*)&as5048a_rx_buffer, 1);
 	}
 }
 /* USER CODE END 4 */
@@ -525,7 +746,6 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
 void StartStateTask(void *argument)
 {
   MX_USB_DEVICE_Init();
-  char usb_buffer[128];
 
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_SET);
   osDelay(50);
@@ -540,6 +760,7 @@ void StartStateTask(void *argument)
   HAL_TIM_Base_Start(&htim1);
   osDelay(10);
 
+  // calculate ADC Offsets
   uint32_t sum_a = 0;
   uint32_t sum_c = 0;
   for (int i = 0; i < 1000; i++) {
@@ -550,20 +771,10 @@ void StartStateTask(void *argument)
   offset_a = (float)sum_a / 1000.0f;
   offset_c = (float)sum_c / 1000.0f;
 
-  while (start_motor == 0) {
-	  int len = sprintf(usb_buffer, "Raw A: %u, Raw C: %u | Motor is OFF.\r\n", raw_adc_a, raw_adc_c);
-	  CDC_Transmit_FS((uint8_t*)usb_buffer, len);
-	  osDelay(1000);
-  }
-
-  int len = snprintf(usb_buffer, sizeof(usb_buffer),
-		  	  	  	"|STARTING OPEN LOOP COMMUTATION | Offset A: %d, Offset C: %d|\r\n",
-		  	  	  	(int)offset_a, (int)offset_c);
-  CDC_Transmit_FS((uint8_t*)usb_buffer, len);
-  osDelay(100);
-
-  HAL_TIM_Base_Stop(&htim1);
-  TIM1->CNT = 0;
+  // Pre-load PWM Timers to 50% duty cycle
+  TIM1->CCR1 = 2099;
+  TIM1->CCR2 = 2099;
+  TIM1->CCR3 = 2099;
 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
@@ -573,45 +784,12 @@ void StartStateTask(void *argument)
   HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_3);
   __HAL_TIM_MOE_ENABLE(&htim1);
 
-  const float PI = 3.14159265359f;
-  float v_limit = 0.08f;
-
-  // Alignment: lock the magnetic field at exactly 0 degrees
-  float dutyA = 0.5f + (v_limit * sinf(0.0f));
-  float dutyB = 0.5f + (v_limit * sinf(0.0f - (2.0f * PI / 3.0f)));
-  float dutyC = 0.5f + (v_limit * sinf(0.0f + (2.0f * PI / 3.0f)));
-
-  TIM1->CCR1 = (uint32_t)(dutyA * 4199.0f);
-  TIM1->CCR2 = (uint32_t)(dutyB * 4199.0f);
-  TIM1->CCR3 = (uint32_t)(dutyC * 4199.0f);
-
-  // Wait 1.5 seconds for the physical rotor to snap into place
-  osDelay(1500);
-
-  // Spinning Motor 10 electrical revolutions per second 
-  // Eaglepower 90kv motor has 20 pole pairs
-  // (10 elec rps) / (20 pole pairs) = 0.5 rps (revolutions per second)
-  uint32_t start_time = HAL_GetTick();
-  float speed_rad_s = 10.0f * (2.0f * PI);
-  float time_sec;
-
   for(;;)
   {
-	uint32_t current_time = HAL_GetTick() - start_time;
-	time_sec = (float)current_time / 1000.0f;
-
-	theta = time_sec * speed_rad_s;
-	theta = fmodf(theta, 2.0f * PI);
-
-	dutyA = 0.5f + (v_limit * sinf(theta));
-	dutyB = 0.5f + (v_limit * sinf(theta - (2.0f * PI / 3.0f)));
-	dutyC = 0.5f + (v_limit * sinf(theta + (2.0f * PI / 3.0f)));
-
-	TIM1->CCR1 = (uint32_t)(dutyA * 4199.0f);
-	TIM1->CCR2 = (uint32_t)(dutyB * 4199.0f);
-	TIM1->CCR3 = (uint32_t)(dutyC * 4199.0f);
-
-	osDelay(2);
+	if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == GPIO_PIN_RESET) {
+		start_motor = 0;
+	}
+	osDelay(100);
   }
 }
 /* USER CODE END Header_StartStateTask */
@@ -622,37 +800,15 @@ void StartTelemetryTask(void *argument)
   char usb_buffer[128];
 
   for(;;) {
-	  uint16_t raw_angle = as5048a_rx_buffer & 0x3FFF;
-
-	  // Reading phase currents
-	  float i_a = ((float)raw_adc_a - offset_a) * 0.040293f;
-	  float i_c = ((float)raw_adc_c - offset_c) * 0.040293f;
-	  float i_b = -(i_a + i_c);
-
-	  // CLARKE TRANSFORMATION
-	  // i_alpha = i_a
-	  // i_beta = (1/sqrt(3) * i_a) + (2/sqrt(3) * i_b)
-	  float i_alpha = i_a;
-	  float i_beta = (0.577350269f * i_a) + (1.154700538f * i_b);
-
-	  // PARK TRANSFORMATION
-	  float c = cosf(theta);
-	  float s = sinf(theta);
-
-	  float i_d = (i_alpha * c) + (i_beta * s);
-	  float i_q = -(i_alpha * s) + (i_beta * c);
-
 	  // format CSV message for telemetry
 	  int len = snprintf(usb_buffer, sizeof(usb_buffer),
-			  	  	  	 "%u,%.2f,%.2f,%.2f,%.2f,%.2f\r\n",
-			  	  	  	 raw_angle, i_a, i_b, i_c, i_d, i_q);
+			  	  	  	     "Vel_Target: %.2f, Vel_Actual: %.2f, Iq_Target: %.2f, Iq_Actual: %.2f\r\n",
+						           target_vel_rads, current_vel_rads, target_iq, i_q);
 
 	  CDC_Transmit_FS((uint8_t*)usb_buffer, len);
 
-	  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, GPIO_PIN_RESET);
-	  HAL_SPI_TransmitReceive_DMA(&hspi3, (uint8_t*)&as5048a_tx_buffer, (uint8_t*)&as5048a_rx_buffer, 1);
-
-	  osDelay(5);
+	  // 50Hz telemetry
+	  osDelay(30);
   }
 }
 /* USER CODE END Header_StartTelemetryTask */

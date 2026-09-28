@@ -3,7 +3,6 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import collections
 
-# --- CONFIGURATION ---
 PORT = '/dev/ttyACM0'
 BAUD = 115200
 MAX_POINTS = 200 
@@ -17,9 +16,7 @@ id_data = collections.deque([0]*MAX_POINTS, maxlen=MAX_POINTS)
 iq_data = collections.deque([0]*MAX_POINTS, maxlen=MAX_POINTS)
 
 try:
-    # timeout=0.01 ensures readline doesn't block the GUI
-    ser = serial.Serial(PORT, BAUD, timeout=0.01)
-    print(f"Connected to {PORT}. Waiting for data...")
+    ser = serial.Serial(PORT, BAUD, timeout=0.1)
 except Exception as e:
     print(f"Failed to open {PORT}: {e}")
     exit()
@@ -37,33 +34,29 @@ line_iq, = ax3.plot(iq_data, label="Iq (Torque)", color='cyan', linewidth=2)
 ax1.set_title("Rotor Position")
 ax1.set_ylim(-1000, 17000)
 
-ax2.set_title("3-Phase AC Currents (Amps)")
-ax2.set_ylim(-3.0, 3.0)
+ax2.set_title("3-Phase AC Currents")
+ax2.set_ylim(-2, 2)
 ax2.legend(loc="upper right")
 
 ax3.set_title("FOC DC Currents (Id, Iq)")
-ax3.set_ylim(-3.0, 3.0)
+ax3.set_ylim(-2, 2)
 ax3.legend(loc="upper right")
 
 def update(frame):
-    # Read ALL available lines in the buffer to prevent lag
-    lines = ser.readlines() 
-    
-    for raw_line in lines:
+    while ser.in_waiting:
         try:
-            line = raw_line.decode('utf-8').strip()
-            if ',' in line and "Motor" not in line and "STARTING" not in line:
+            line = ser.readline().decode('utf-8').strip()
+            if ',' in line and "Motor is OFF" not in line and "STARTING" not in line:
                 parts = line.split(',')
                 if len(parts) == 6:
-                    # Parse the fixed-point integers and convert back to Amps!
                     angles.append(int(parts[0]))
-                    ia_data.append(float(parts[1]) / 1000.0)
-                    ib_data.append(float(parts[2]) / 1000.0)
-                    ic_data.append(float(parts[3]) / 1000.0)
-                    id_data.append(float(parts[4]) / 1000.0)
-                    iq_data.append(float(parts[5]) / 1000.0)
+                    ia_data.append(float(parts[1]))
+                    ib_data.append(float(parts[2]))
+                    ic_data.append(float(parts[3]))
+                    id_data.append(float(parts[4]))
+                    iq_data.append(float(parts[5]))
         except Exception:
-            pass # Ignore fragmented lines
+            pass 
 
     line_angle.set_ydata(angles)
     line_ia.set_ydata(ia_data)
@@ -71,7 +64,6 @@ def update(frame):
     line_ic.set_ydata(ic_data)
     line_id.set_ydata(id_data)
     line_iq.set_ydata(iq_data)
-    
     return line_angle, line_ia, line_ib, line_ic, line_id, line_iq
 
 ani = animation.FuncAnimation(fig, update, interval=20, blit=False)

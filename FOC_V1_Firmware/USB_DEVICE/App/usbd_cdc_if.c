@@ -261,15 +261,33 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
+  // ==========================================================================================
   // bring in the global flag from main.c
   extern volatile uint8_t start_motor;
+  static int str_index = 0;
+  const char trigger_word[] = "toggle";
   // if we receive any data, toggle the flag
   if (*Len > 0) {
-	  start_motor = 1;
+	  for (uint32_t i = 0; i < *Len; i++) {
+      if (Buf[i] == trigger_word[str_index]) {
+        str_index++;
+        if (str_index == 6) {
+          start_motor = !start_motor;
+          str_index = 0;
+        }
+      } else {
+        if (Buf[i] == trigger_word[0]) {
+          str_index = 1;
+        } else {
+          str_index = 0;
+        }
+      }
+	  }
   }
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
   return (USBD_OK);
+  // ==========================================================================================
   /* USER CODE END 6 */
 }
 

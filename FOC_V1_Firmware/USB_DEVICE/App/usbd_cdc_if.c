@@ -263,7 +263,7 @@ static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
   /* USER CODE BEGIN 6 */
   // ==========================================================================================
   // bring in the global flag from main.c
-  extern volatile uint8_t start_motor;
+  extern volatile MotorState_t motor_state;
   static int str_index = 0;
   const char trigger_word[] = "toggle";
   // if we receive any data, toggle the flag
@@ -272,7 +272,11 @@ static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
       if (Buf[i] == trigger_word[str_index]) {
         str_index++;
         if (str_index == 6) {
-          start_motor = !start_motor;
+          if (motor_state == STATE_OFF) {
+            motor_state = STATE_CALIBRATING;
+          } else {
+            motor_state = STATE_OFF;
+          }
           str_index = 0;
         }
       } else {

@@ -13,7 +13,7 @@ I started this project to deeply understand the hardware architecture of modern,
 
 The system is split into a 4-layer main power board (handling the MCU and 60V power stage) and a separate 2-layer magnetic encoder board mounted directly to the motor. This approach kept the overall footprint compact and reduced manufacturing costs.
 
-As the project progressed, it evolved beyond "build a VESC clone" into writing a full custom bare-metal FOC firmware stack from scratch — more on why below. As of 26 September 2026, the board runs true closed-loop Field-Oriented Control, with working current control and smooth closed-loop velocity control of the motor.
+As the project progressed, it evolved beyond "build a VESC clone" into writing a full custom bare-metal FOC firmware stack from scratch — more on why below. As of 28 September 2026, the board runs true closed-loop Field-Oriented Control, with working current control and smooth closed-loop velocity control of the motor.
 
 ## Key Features
 
@@ -202,4 +202,4 @@ Since abandoning VESC firmware, I've been built a custom bare-metal firmware sta
 | Sep 22 | ADC current sensing achieved (noisy — later traced to missing decoupling capacitor) |
 | Sep 24 | Fixed missing decoupling capacitor; current sensing quality improved |
 | Sep 25 | Closed-loop current control achieved |
-| **Sep 26** | **Closed-loop velocity control achieved — true FOC working** |
+| **Sep 28** | **Closed-loop velocity control achieved — true FOC working** |

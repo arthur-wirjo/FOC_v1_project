@@ -49,20 +49,20 @@ osThreadId_t StateTaskHandle;
 const osThreadAttr_t StateTask_attributes = {
   .name = "StateTask",
   .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+  .priority = (osPriority_t) osPriorityHigh,
 };
 /* Definitions for TelemetryTask */
 osThreadId_t TelemetryTaskHandle;
 const osThreadAttr_t TelemetryTask_attributes = {
   .name = "TelemetryTask",
-  .stack_size = 128 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 
 /* USER CODE BEGIN PV */
 uint16_t as5048a_tx_buffer = 0xFFFF;
 uint16_t as5048a_rx_buffer = 0x0000;
-volatile uint8_t start_motor = 0;
+volatile MotorState_t motor_state = STATE_OFF;
 // ADC
 volatile uint16_t raw_adc_a, raw_adc_c;
 volatile float offset_a = 2048.0f;
@@ -72,12 +72,18 @@ volatile float global_theta_elec = 0.0f;
 volatile float i_a, i_b, i_c;
 volatile float i_d, i_q;
 volatile float v_d, v_q;
-// PI Controller states
+// Current PI Controller states
 volatile float integral_d = 0.0f;
 volatile float integral_q = 0.0f;
 volatile float target_id = 0.0f;
-volatile float target_iq = 0.5f; // target 0.5A for testing
-
+volatile float target_iq = 0.0f;
+// Velocity PI Controller states
+volatile float current_vel_rads = 0.0f;
+volatile float target_vel_rads = 10.0f; // target 10 rad/s (~95rpm) for testing
+volatile float prev_theta_mech = 0.0f;
+volatile float vel_integral = 0.0f;
+// Timing constant (168MHz clock and 4199 timer period -> 168Mhz/(2*4200) = 20kHz PWM)
+const float DT = 0.00005f;
 // Motor constants
 const float POLE_PAIRS = 20.0f; // Eaglepower 90kv motor
 const float PI_CONST = 3.14159265359f;
@@ -103,6 +109,8 @@ void StartTelemetryTask(void *argument);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+// Wrap angle helper function
 static inline float wrap_angle(float angle) {
 	while (angle > PI_CONST) {
 		angle -= (2.0f * PI_CONST);
@@ -113,6 +121,7 @@ static inline float wrap_angle(float angle) {
 	return angle;
 }
 
+// fast sin & cos function
 static inline float fast_sin(float x) {
 	x = wrap_angle(x);
 	float sin_x;
@@ -133,9 +142,25 @@ static inline float fast_sin(float x) {
 	}
 	return sin_x;
 }
-
 static inline float fast_cos(float x) {
 	return fast_sin(x + 1.570796327f); // sin(x + pi/2)
+}
+
+// Fast Inverse Square Root for clamping v_d & v_q (calculates 1/sqrt(x))
+static inline float fast_inv_sqrt(float number) {
+  union {
+    float f;
+    uint32_t i;
+  } conv;
+
+  float x2;
+  const float threehalfs = 1.5F;
+
+  x2 = number * 0.5F;
+  conv.f = number;
+  conv.i = 0x5f3759df - (conv.i >> 1);
+  conv.f = conv.f * (threehalfs - (x2 * conv.f * conv.f));
+  return conv.f;
 }
 /* USER CODE END 0 */
 
@@ -567,12 +592,14 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
 		raw_adc_a = HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_1);
 		raw_adc_c = HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_1);
 
-		if (start_motor == 0) {
+		if (motor_state == STATE_OFF) {
 			// motor off: reset integral and set 50% duty cycle
 			integral_d = 0.0f;
 			integral_q = 0.0f;
+      vel_integral = 0.0f;
 			TIM1->CCR1 = 2099;
 			TIM1->CCR2 = 2099;
+      TIM1->CCR3 = 2099;
 
 			// trigger next SPI DMA for encoder so its ready when we start
 			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, GPIO_PIN_RESET);
@@ -589,7 +616,7 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
 		i_b = -(i_a + i_c);
 
 		// Get electrical angle from last SPI DMA transfer
-		uint16_t raw_angle = as5048a_rx_buffer & 0x3FFF;
+		uint16_t raw_angle = (as5048a_rx_buffer & 0x3FFF);
 		float theta_mech = ((float)raw_angle / 16384.0f) * (2.0f * PI_CONST);
 		float theta_elec = (theta_mech - mech_offset) * POLE_PAIRS;
 		// wrap angle 0 to 2PI
@@ -604,6 +631,32 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
 		float c = fast_cos(theta_elec);
 		float s = fast_sin(theta_elec);
 
+    // Velocity calculation with low pass filter
+    float delta_theta = wrap_angle(theta_mech - prev_theta_mech);
+    prev_theta_mech = theta_mech;
+    float raw_vel = delta_theta/DT;
+    float alpha = 0.01f; // use 0.01 for now, velocity should be relatively smooth
+    current_vel_rads = (alpha * raw_vel) + ((1.0f - alpha) * current_vel_rads);
+
+    // Velocity PI Controller (TO BE TUNED)
+    float Kp_vel = 0.02f;
+    float Ki_vel = 0.0005f;
+    float max_iq = 1.0f; // Max current 1A for now for safety
+    
+    float err_vel = target_vel_rads - current_vel_rads;
+    vel_integral += err_vel * Ki_vel;
+    
+    // Velocity Anti-windup
+    if (vel_integral > max_iq) vel_integral = max_iq;
+    if (vel_integral < -max_iq) vel_integral = -max_iq;
+
+    // Velocity PI control
+    target_iq = (Kp_vel * err_vel) + vel_integral;
+
+    // Clamp target_iq for safety
+    if (target_iq > max_iq) target_iq = max_iq;
+    if (target_iq < -max_iq) target_iq = -max_iq;
+
 		// Clarke Transform
 		float i_alpha = i_a;
 		float i_beta = (0.577350269f * i_a) + (1.154700538f * i_b);
@@ -612,26 +665,37 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
 		i_d = (i_alpha * c) + (i_beta * s);
 		i_q = -(i_alpha * s) + (i_beta * c);
 
-		// PI Controllers
-		float Kp = 0.05f;
-		float Ki = 0.001f;
-		float v_max = 0.5f; // max duty cycle variance
+		// Current PI Controllers (TO BE TUNED)
+		float Kp_cur = 0.05f;
+		float Ki_curr = 0.001f;
+		float v_max = 0.2f; // max duty cycle variance
 
 		float err_d = target_id - i_d;
 		float err_q = target_iq - i_q;
 
-		integral_d += err_d * Ki;
-		integral_q += err_q * Ki;
+		integral_d += err_d * Ki_curr;
+		integral_q += err_q * Ki_curr;
 
-		// Anti-windup
+		// Current Anti-windup
 		if (integral_d > v_max) integral_d = v_max;
 		if (integral_d < -v_max) integral_d = -v_max;
 		if (integral_q > v_max) integral_q = v_max;
 		if (integral_q < -v_max) integral_q = -v_max;
 
-		// PI control
-		v_d = (Kp * err_d) + integral_d;
-		v_q = (Kp * err_q) + integral_q;
+		// Current PI control
+		v_d = (Kp_cur * err_d) + integral_d;
+		v_q = (Kp_cur * err_q) + integral_q;
+
+    // Circular voltage limiting (clamping v_d & v_q)
+    float v_mag_sq = (v_d * v_d) + (v_q * v_q);
+    float v_max_sq = v_max * v_max;
+
+    if (v_mag_sq > v_max_sq) {
+      // calculate scalinng factor (v_max / sqrt(v_d^2 + v_q^2))
+      float scale = v_max * fast_inv_sqrt(v_mag_sq);
+      v_d *= scale;
+      v_q *= scale;
+    }
 
 		// Inverse Park Transform
 		float v_alpha = (v_d * c) - (v_q * s);
@@ -723,7 +787,7 @@ void StartStateTask(void *argument)
   for(;;)
   {
 	if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == GPIO_PIN_RESET) {
-		start_motor = 0;
+		motor_state = STATE_OFF;
 	}
 	osDelay(100);
   }
@@ -738,13 +802,13 @@ void StartTelemetryTask(void *argument)
   for(;;) {
 	  // format CSV message for telemetry
 	  int len = snprintf(usb_buffer, sizeof(usb_buffer),
-			  	  	  	 "Theta: %.2f, Id: %.2f, Iq: %.2f, Vd: %.2f, Vq: %.2f\r\n",
-						 global_theta_elec, i_d, i_q, v_d, v_q);
+			  	  	  	     "Vel_Target: %.2f, Vel_Actual: %.2f, Iq_Target: %.2f, Iq_Actual: %.2f, theta: %.2f\r\n",
+						           target_vel_rads, current_vel_rads, target_iq, i_q, prev_theta_mech);
 
 	  CDC_Transmit_FS((uint8_t*)usb_buffer, len);
 
 	  // 50Hz telemetry
-	  osDelay(20);
+	  osDelay(30);
   }
 }
 /* USER CODE END Header_StartTelemetryTask */

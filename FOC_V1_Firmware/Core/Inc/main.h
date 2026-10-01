@@ -37,6 +37,13 @@ extern "C" {
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
 
+// FOC FSM
+typedef enum {
+  STATE_OFF = 0,
+  STATE_CALIBRATING,
+  STATE_RUNNING
+} MotorState_t;
+
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/

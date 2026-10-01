@@ -62,7 +62,6 @@ const osThreadAttr_t TelemetryTask_attributes = {
 /* USER CODE BEGIN PV */
 uint16_t as5048a_tx_buffer = 0xFFFF;
 uint16_t as5048a_rx_buffer = 0x0000;
-volatile MotorState_t motor_state = STATE_OFF;
 // ADC
 volatile uint16_t raw_adc_a, raw_adc_c;
 volatile float offset_a = 2048.0f;
@@ -79,16 +78,19 @@ volatile float target_id = 0.0f;
 volatile float target_iq = 0.0f;
 // Velocity PI Controller states
 volatile float current_vel_rads = 0.0f;
-volatile float target_vel_rads = -10.0f; // target 10 rad/s (~95rpm) for testing
+volatile float target_vel_rads = 10.0f; // target 10 rad/s (~95rpm) for testing
 volatile float prev_theta_mech = 0.0f;
 volatile float vel_integral = 0.0f;
-volatile float ramped_target_vel = 0.0f;
 // Timing constant (168MHz clock and 4199 timer period -> 168Mhz/(2*4200) = 20kHz PWM)
 const float DT = 0.00005f;
 // Motor constants
 const float POLE_PAIRS = 20.0f; // Eaglepower 90kv motor
 const float PI_CONST = 3.14159265359f;
 volatile float mech_offset = 0.0f; // set it to zero-angle calibration
+const float MOTOR_DIR = 1.0f;
+// FSM
+volatile MotorState_t motor_state = STATE_OFF;
+volatile uint32_t calib_counter = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -593,45 +595,15 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
 		raw_adc_a = HAL_ADCEx_InjectedGetValue(&hadc1, ADC_INJECTED_RANK_1);
 		raw_adc_c = HAL_ADCEx_InjectedGetValue(&hadc2, ADC_INJECTED_RANK_1);
 
-    // convert raw ticks to amps
-		// assume 2048 ticks is exactly 0 Amps, gain = 20, and R_shunt = 0.001
-	  // multiplier = 3.3V / (4095 * gain * R_shunt) = 3.3 / (4095 * 20 * 0.001) = 0.040293f
-		i_a = ((float)raw_adc_a - offset_a) * 0.040293f;
-		i_c = ((float)raw_adc_c - offset_c) * 0.040293f;
-		// kirchoff's law: i_a + i_b + i_c = 0
-		i_b = -(i_a + i_c);
-
-		// Get mechanical angle from last SPI DMA transfer
-		uint16_t raw_angle = (as5048a_rx_buffer & 0x3FFF);
+    // Get electrical angle from last SPI DMA transfer
+    uint16_t raw_angle = (as5048a_rx_buffer & 0x3FFF); // max = 16383
 		float theta_mech = ((float)raw_angle / 16384.0f) * (2.0f * PI_CONST);
-
-    // Velocity calculation with low pass filter
-    float delta_theta = wrap_angle(theta_mech - prev_theta_mech);
-    prev_theta_mech = theta_mech;
-    float raw_vel = delta_theta/DT;
-    float alpha = 0.1f; 
-    current_vel_rads = (alpha * raw_vel) + ((1.0f - alpha) * current_vel_rads);
-		
-    float theta_elec = 0.0f;
-    float c = 1.0f;
-		float s = 0.0f;
-
-    static uint32_t calib_counter = 0;
-    static uint8_t kickstart_active = 0;
-    static uint32_t kickstart_counter = 0;
-    const float KICK_CURRENT = 0.5f;
-    const uint32_t KICK_MAX_TICKS = 4000;
-    const float BREAKAWAY_VEL_THRESH = 1.0f;
 
 		if (motor_state == STATE_OFF) {
 			// motor off: reset integral and set 50% duty cycle
 			integral_d = 0.0f;
 			integral_q = 0.0f;
       vel_integral = 0.0f;
-      ramped_target_vel = 0.0f;
-      calib_counter = 0;
-      kickstart_active = 0;
-      kickstart_counter = 0;
 			TIM1->CCR1 = 2099;
 			TIM1->CCR2 = 2099;
       TIM1->CCR3 = 2099;
@@ -645,91 +617,114 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
       calib_counter++;
 
       // Force electrical angle to 0
-      theta_elec = 0.0f;
-      c = 1.0f;
-      s = 0.0f;
+      float c = 1.0f;
+      float s = 0.0f;
 
-      if (calib_counter < 16000) {
-        // pull into rough alignment
-        target_id = 0.35f;
-        target_iq = 0.0f;
-      } else {
-        // actively brake any leftover ringing
-        target_id = 0.35f;
-        float damp_iq = -0.3f * current_vel_rads;
-        if (damp_iq > 0.3f) damp_iq = 0.3f;
-        if (damp_iq < 0.3f) damp_iq = -0.3f;
-        target_iq = damp_iq; 
-      }
+      // Smoothly ramp up v_d over 10,000 ticks (0.5s at 20kHz) to prevent violent snapping
+      float target_calib_voltage = 0.1f; // 0.15f draws too much current
+      float ramp_progress = (float)calib_counter / 10000.0f;
+      if (ramp_progress > 1.0f) ramp_progress = 1.0f;
 
+      v_d = target_calib_voltage * ramp_progress;
+      v_q = 0.0f;
+
+      // Wait for 20,000 ticks (1.0s) to make sure motor is still
       if (calib_counter >= 20000) {
-      mech_offset = theta_mech;
-      target_id = 0.0f;
-      integral_d = 0.0f;
-      integral_q = 0.0f;
-      vel_integral = 0.0f;
-      calib_counter = 0;
-      
-      kickstart_active = 1;
-      kickstart_counter = 0;
+        mech_offset = theta_mech;
 
-      motor_state = STATE_RUNNING;
-    }
-    }
-    else if (motor_state == STATE_RUNNING) {
-      theta_elec = wrap_angle((theta_mech - mech_offset) * POLE_PAIRS);
-      c = fast_cos(theta_elec);
-      s = fast_sin(theta_elec);
+        // Reset PI Controller before running
+        integral_d = 0.0f;
+        integral_q = 0.0f;
+        vel_integral = 0.0f;
+        prev_theta_mech = theta_mech;
+        current_vel_rads = 0.0f;
 
-      // Velocity PI Controller (TO BE TUNED)
-      float Kp_vel = 0.02f;
-      float Ki_vel = 0.2f;
-      float max_iq = 3.0f;
-      
-      // 50rad/s^2 max acceleration
-      float max_accel_step = 50.0f * DT;
-
-      if (ramped_target_vel < target_vel_rads) {
-        ramped_target_vel += max_accel_step;
-        if (ramped_target_vel > target_vel_rads) {
-          ramped_target_vel = target_vel_rads;
-        }
-      } else if (ramped_target_vel > target_vel_rads) {
-        ramped_target_vel -= max_accel_step;
-        if (ramped_target_vel < target_vel_rads) {
-          ramped_target_vel = target_vel_rads;
-        }
+        motor_state = STATE_RUNNING;
       }
 
-      if (kickstart_active) {
-        kickstart_counter++;
-        float kick_iq = (target_vel_rads >= 0.0f) ? KICK_CURRENT : -KICK_CURRENT;
-        target_iq = kick_iq;
-
-        if (fabsf(current_vel_rads) > BREAKAWAY_VEL_THRESH || kickstart_counter >= KICK_MAX_TICKS) {
-          kickstart_active = 0;
-          vel_integral = kick_iq;
-        }
-      } else {
-        float err_vel = ramped_target_vel - current_vel_rads;
-        vel_integral += err_vel * Ki_vel * DT;
-        
-        // Velocity Anti-windup
-        if (vel_integral > max_iq) vel_integral = max_iq;
-        if (vel_integral < -max_iq) vel_integral = -max_iq;
-
-        // Velocity PI control
-        target_iq = (Kp_vel * err_vel) + vel_integral;
-
-        // Clamp target_iq for safety
-        if (target_iq > max_iq) target_iq = max_iq;
-        if (target_iq < -max_iq) target_iq = -max_iq;
-      }
-
-      target_id = 0.0f;
+      // Bypass PI Controllers and go straight to Inverse Clarke & Park and SVPWM
+      // Inverse Park Transform
+      float v_alpha = (v_d * c) - (v_q * s);
+      float v_beta = (v_d * s) + (v_q * c);
+      // Inverse Clarke Transform & SVPWM (Saddle Injection)
+      float v_a = v_alpha;
+      float v_b = -0.5f * v_alpha + 0.866025403f * v_beta;
+      float v_c = -0.5f * v_alpha - 0.866025403f * v_beta;
+      // find min and max for saddle injection
+      float v_min_val = v_a;
+      if (v_b < v_min_val) v_min_val = v_b;
+      if (v_c < v_min_val) v_min_val = v_c;
+      float v_max_val = v_a;
+      if (v_b > v_max_val) v_max_val = v_b;
+      if (v_c > v_max_val) v_max_val = v_c;
+      float v_offset = -0.5f * (v_max_val + v_min_val);
+      // calculate duty cycles (0.0 to 1.0)
+      float duty_a = 0.5f + (v_a + v_offset);
+      float duty_b = 0.5f + (v_b + v_offset);
+      float duty_c = 0.5f + (v_c + v_offset);
+      // clamp duties to 0.05 - 0.95 to allow drv8301 bootstrap capacitors to charge
+      if (duty_a > 0.95f) duty_a = 0.95f;
+      if (duty_a < 0.05f) duty_a = 0.05f;
+      if (duty_b > 0.95f) duty_b = 0.95f;
+      if (duty_b < 0.05f) duty_b = 0.05f;
+      if (duty_c > 0.95f) duty_c = 0.95f;
+      if (duty_c < 0.05f) duty_c = 0.05f;
+      // write duty cycles to timers
+      TIM1->CCR1 = (uint32_t)(duty_a * 4199.0f);
+      TIM1->CCR2 = (uint32_t)(duty_b * 4199.0f);
+      TIM1->CCR3 = (uint32_t)(duty_c * 4199.0f);
+      // trigger next SPI DMA transfer
+      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, GPIO_PIN_RESET);
+      HAL_SPI_TransmitReceive_DMA(&hspi3, (uint8_t*)&as5048a_tx_buffer, (uint8_t*)&as5048a_rx_buffer, 1);
+      return;
     }
 
-    global_theta_elec = theta_elec;
+		// convert raw ticks to amps
+		// assume 2048 ticks is exactly 0 Amps, gain = 20, and R_shunt = 0.001
+	  // multiplier = 3.3V / (4095 * gain * R_shunt) = 3.3 / (4095 * 20 * 0.001) = 0.040293f
+		i_a = ((float)raw_adc_a - offset_a) * 0.040293f;
+		i_c = ((float)raw_adc_c - offset_c) * 0.040293f;
+		// kirchoff's law: i_a + i_b + i_c = 0
+		i_b = -(i_a + i_c);
+
+		float theta_elec = MOTOR_DIR * (theta_mech - mech_offset) * POLE_PAIRS;
+		// wrap angle 0 to 2PI
+		while (theta_elec > 2.0f * PI_CONST) {
+			theta_elec -= 2.0f * PI_CONST;
+		}
+		while (theta_elec < 0.0f) {
+			theta_elec += 2.0f * PI_CONST;
+		}
+		global_theta_elec = theta_elec;
+
+		float c = fast_cos(theta_elec);
+		float s = fast_sin(theta_elec);
+
+    // Velocity calculation with low pass filter
+    float delta_theta = wrap_angle(theta_mech - prev_theta_mech);
+    prev_theta_mech = theta_mech;
+    float raw_vel = delta_theta/DT;
+    float alpha = 0.01f; // use 0.01 for now, velocity should be relatively smooth
+    current_vel_rads = (alpha * raw_vel) + ((1.0f - alpha) * current_vel_rads);
+
+    // Velocity PI Controller (TO BE TUNED)
+    float Kp_vel = 0.02f;
+    float Ki_vel = 0.0005f;
+    float max_iq = 1.0f; // Max current 1A for now for safety
+    
+    float err_vel = current_vel_rads - target_vel_rads;
+    vel_integral += err_vel * Ki_vel;
+    
+    // Velocity Anti-windup
+    if (vel_integral > max_iq) vel_integral = max_iq;
+    if (vel_integral < -max_iq) vel_integral = -max_iq;
+
+    // Velocity PI control
+    target_iq = (Kp_vel * err_vel) + vel_integral;
+
+    // Clamp target_iq for safety
+    if (target_iq > max_iq) target_iq = max_iq;
+    if (target_iq < -max_iq) target_iq = -max_iq;
 
 		// Clarke Transform
 		float i_alpha = i_a;
@@ -740,15 +735,15 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
 		i_q = -(i_alpha * s) + (i_beta * c);
 
 		// Current PI Controllers (TO BE TUNED)
-		float Kp_cur = 0.02f;
-		float Ki_curr = 50.0f;
-		float v_max = 0.4f; // max duty cycle variance
+		float Kp_cur = 0.05f;
+		float Ki_curr = 0.001f;
+		float v_max = 0.2f; // max duty cycle variance
 
 		float err_d = target_id - i_d;
 		float err_q = target_iq - i_q;
 
-		integral_d += err_d * Ki_curr * DT;
-		integral_q += err_q * Ki_curr * DT;
+		integral_d += err_d * Ki_curr;
+		integral_q += err_q * Ki_curr;
 
 		// Current Anti-windup
 		if (integral_d > v_max) integral_d = v_max;
@@ -872,16 +867,15 @@ void StartStateTask(void *argument)
 void StartTelemetryTask(void *argument)
 {
   char usb_buffer[128];
-  int counter = 0;
+
   for(;;) {
-    if (motor_state == STATE_RUNNING) { 
+    if (motor_state == STATE_RUNNING) {
       // format CSV message for telemetry
       int len = snprintf(usb_buffer, sizeof(usb_buffer),
-                        "%d | Vel_Target: %.2f, Vel_Actual: %.2f, Iq_Target: %.2f, Iq_Actual: %.2f, theta: %.2f, theta_elec: %.2f\r\n",
-                        counter, target_vel_rads, current_vel_rads, target_iq, i_q, prev_theta_mech, global_theta_elec);
+                        "Vel_Target: %.2f, Vel_Actual: %.2f, Iq_Target: %.2f, Iq_Actual: %.2f, theta_mech: %.2f\r\n",
+                        target_vel_rads, current_vel_rads, target_iq, i_q, prev_theta_mech);
 
       CDC_Transmit_FS((uint8_t*)usb_buffer, len);
-      counter++;
     }
 	  // 50Hz telemetry
 	  osDelay(30);

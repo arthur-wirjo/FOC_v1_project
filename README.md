@@ -17,7 +17,7 @@ As the project progressed, it evolved beyond "build a VESC clone" into writing a
 
 ## Key Features
 
-* **Working Closed-Loop FOC:** Fully custom bare-metal firmware achieves smooth closed-loop current control and velocity control (no VESC firmware involved).
+* **Working Closed-Loop FOC:** Fully custom bare-metal firmware achieves smooth closed-loop current control and velocity control.
 * **60V Power Stage:** 60V-rated MOSFETs capable of handling 10S Li-Po battery voltages and regenerative braking spikes.
 * **Precision Current Sensing:** 1mΩ shunt resistors utilizing strict Kelvin connections and RC-filtered differential amplifiers.
 * **Isolated Telemetry:** ADuM3160-based USB isolation to protect the host computer from catastrophic 60V transients during live tuning.
@@ -74,7 +74,7 @@ The symbol incorrectly labeled Pin 7 as "Drain". In reality, the D2PAK-7 package
 ### The USB D+/D- Swap (V1.2)
 With the phase-short issue resolved, V1.2 soldered up cleanly with no shorts between V++, GND, or the phase wires. After hours of VESC firmware macro configuration, I successfully flashed VESC firmware onto the board. However, the board never enumerated over USB — nothing populated on the host PC.
 
-I re-checked the firmware configuration and it looked correct, so I moved to the hardware. It turned out to be a wiring mistake on my end, though the confusing pin naming in the schematic symbol didn't help: instead of connecting DP1↔DP2 and DN1↔DN2 (the isolator-side and MCU-side USB differential pairs), I had wired DP1↔DN1 and DP2↔DN2 — crossing the differential pairs instead of linking them straight through. I corrected this for V1.3's respin.
+I re-checked the firmware configuration and it looked correct, so I moved to the hardware. It turned out to be a wiring mistake on my end, though the confusing pin naming in the schematic symbol didn't help: instead of connecting DP1↔DP2 and DN1↔DN2 (the isolator-side and MCU-side USB differential pairs), I had wired DP1↔DN1 and DP2↔DN2 — crossing the differential pairs instead of linking them straight through. I corrected this for V1.3.
 
 ### The Mysterious Non-Enumerating USB (V1.3)
 V1.3 fixed the DP/DN wiring mistake. USB still did not enumerate.

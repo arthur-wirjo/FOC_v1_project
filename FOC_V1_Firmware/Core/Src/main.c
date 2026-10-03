@@ -16,6 +16,7 @@
 #include "usbd_cdc_if.h"
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -88,7 +89,26 @@ const float DT = 0.00005f;
 // Motor constants
 const float POLE_PAIRS = 20.0f; // Eaglepower 90kv motor
 const float PI_CONST = 3.14159265359f;
-volatile float mech_offset = 0.0f; // set it to zero-angle calibration
+volatile float mech_offset = 0.0f;
+// High-rate binary telemetry
+#define CUR_STREAM_DECIMATION 4 // 20kHz
+#define CUR_STREAM_BUF_LEN 256
+typedef struct {
+  uint16_t seq;
+  float i_a;
+  float i_b;
+  float i_c;
+} CurSample_t;
+volatile CurSample_t cur_stream_buf[CUR_STREAM_BUF_LEN];
+volatile uint16_t cur_stream_head = 0;
+volatile uint16_t cur_stream_tail = 0;
+volatile uint16_t cur_stream_seq = 0;
+osThreadId_t CurStreamTaskHandle;
+const osThreadAttr_t CurStreamTask_attributes = {
+  .name = "CurStreamTask",
+  .stack_size = 512 * 4,
+  .priority = (osPriority_t) osPriorityAboveNormal,
+};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -106,6 +126,7 @@ void StartStateTask(void *argument);
 void StartTelemetryTask(void *argument);
 
 /* USER CODE BEGIN PFP */
+void StartCurStreamTask(void *argument);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -192,6 +213,7 @@ int main(void)
   /* Create the thread(s) */
   StateTaskHandle = osThreadNew(StartStateTask, NULL, &StateTask_attributes);
   TelemetryTaskHandle = osThreadNew(StartTelemetryTask, NULL, &TelemetryTask_attributes);
+  CurStreamTaskHandle = osThreadNew(StartCurStreamTask, NULL, &CurStreamTask_attributes);
 
   /* Start scheduler */
   osKernelStart();
@@ -273,7 +295,7 @@ static void MX_ADC1_Init(void)
   sConfigInjected.InjectedChannel = ADC_CHANNEL_0;
   sConfigInjected.InjectedRank = 1;
   sConfigInjected.InjectedNbrOfConversion = 1;
-  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_15CYCLES;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_28CYCLES;
   sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONVEDGE_RISING;
   sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJECCONV_T1_TRGO;
   sConfigInjected.AutoInjectedConv = DISABLE;
@@ -318,7 +340,7 @@ static void MX_ADC2_Init(void)
   sConfigInjected.InjectedChannel = ADC_CHANNEL_1;
   sConfigInjected.InjectedRank = 1;
   sConfigInjected.InjectedNbrOfConversion = 1;
-  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_15CYCLES;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_28CYCLES;
   sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONVEDGE_RISING;
   sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJECCONV_T1_TRGO;
   sConfigInjected.AutoInjectedConv = DISABLE;
@@ -601,6 +623,24 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
 		// kirchoff's law: i_a + i_b + i_c = 0
 		i_b = -(i_a + i_c);
 
+    // High-rate current telemetry streaming (decimated, non-blocking)
+    static uint32_t stream_decim_counter = 0;
+    if (motor_state != STATE_OFF) {
+      stream_decim_counter++;
+      if (stream_decim_counter >= CUR_STREAM_DECIMATION) {
+        stream_decim_counter = 0;
+        uint16_t next_head = (uint16_t)((cur_stream_head + 1) % CUR_STREAM_BUF_LEN);
+        if (next_head != cur_stream_tail) {
+          // buffer not full
+          cur_stream_buf[cur_stream_head].seq = cur_stream_seq++;
+          cur_stream_buf[cur_stream_head].i_a = i_a;
+          cur_stream_buf[cur_stream_head].i_b = i_b;
+          cur_stream_buf[cur_stream_head].i_c = i_c;
+          cur_stream_head = next_head;
+        }
+      }
+    }
+
 		// Get mechanical angle from last SPI DMA transfer
 		uint16_t raw_angle = (as5048a_rx_buffer & 0x3FFF);
 		float theta_mech = ((float)raw_angle / 16384.0f) * (2.0f * PI_CONST);
@@ -796,13 +836,13 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
 		float duty_b = 0.5f + (v_b + v_offset);
 		float duty_c = 0.5f + (v_c + v_offset);
 
-		// clamp duties to 0.05 - 0.95 to allow drv8301 bootstrap capacitors to charge
-		if (duty_a > 0.95f) duty_a = 0.95f;
-		if (duty_a < 0.05f) duty_a = 0.05f;
-		if (duty_b > 0.95f) duty_b = 0.95f;
-		if (duty_b < 0.05f) duty_b = 0.05f;
-		if (duty_c > 0.95f) duty_c = 0.95f;
-		if (duty_c < 0.05f) duty_c = 0.05f;
+		// clamp duties to 0.1 - 0.9
+		if (duty_a > 0.9f) duty_a = 0.9f;
+		if (duty_a < 0.1f) duty_a = 0.1f;
+		if (duty_b > 0.9f) duty_b = 0.9f;
+		if (duty_b < 0.1f) duty_b = 0.1f;
+		if (duty_c > 0.9f) duty_c = 0.9f;
+		if (duty_c < 0.1f) duty_c = 0.1f;
 
 		// write duty cycles to timers
 		TIM1->CCR1 = (uint32_t)(duty_a * 4199.0f);
@@ -813,6 +853,41 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
 		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, GPIO_PIN_RESET);
 		HAL_SPI_TransmitReceive_DMA(&hspi3, (uint8_t*)&as5048a_tx_buffer, (uint8_t*)&as5048a_rx_buffer, 1);
 	}
+}
+
+#define FRAME_SYNC0 0xAA
+#define FRAME_SYNC1 0x55
+#define FRAME_LEN 17 // 2 sync + 2 seq + 12 (3 floats) + 1 checksum
+
+void StartCurStreamTask(void *argument) {
+  uint8_t frame[FRAME_LEN];
+
+  for (;;) {
+    while (cur_stream_tail != cur_stream_head) {
+      CurSample_t s = cur_stream_buf[cur_stream_tail]; // local copy
+
+      frame[0] = FRAME_SYNC0;
+      frame[1] = FRAME_SYNC1;
+      memcpy(&frame[2], &s.seq, 2);
+      memcpy(&frame[4], &s.i_a, 4);
+      memcpy(&frame[8], &s.i_b, 4);
+      memcpy(&frame[12], &s.i_c, 4);
+
+      uint8_t cksum = 0;
+      for (int i = 2; i < 16; i++) {
+        cksum ^= frame[i];
+      }
+      frame[16] = cksum;
+
+      uint8_t result = CDC_Transmit_FS(frame, FRAME_LEN);
+      if (result == USBD_OK) {
+        cur_stream_tail = (uint16_t)((cur_stream_tail + 1) % CUR_STREAM_BUF_LEN);
+      } else {
+        osDelay(1); // USB busy so retry same sample, don't drop or corrupt it
+      }
+    }
+    osDelay(1);
+  }
 }
 /* USER CODE END 4 */
 
@@ -871,18 +946,18 @@ void StartStateTask(void *argument)
 /* USER CODE BEGIN Header_StartTelemetryTask */
 void StartTelemetryTask(void *argument)
 {
-  char usb_buffer[128];
-  int counter = 0;
+  //char usb_buffer[128];
+  //int counter = 0;
   for(;;) {
-    if (motor_state == STATE_RUNNING) { 
+    //if (motor_state == STATE_RUNNING) { 
       // format CSV message for telemetry
-      int len = snprintf(usb_buffer, sizeof(usb_buffer),
-                        "%d | Vel_Target: %.2f, Vel_Actual: %.2f, Iq_Target: %.2f, Iq_Actual: %.2f, theta: %.2f, theta_elec: %.2f\r\n",
-                        counter, target_vel_rads, current_vel_rads, target_iq, i_q, prev_theta_mech, global_theta_elec);
+      //int len = snprintf(usb_buffer, sizeof(usb_buffer),
+        //                "%d | Vel_Target: %.2f, Vel_Actual: %.2f, Iq_Target: %.2f, Iq_Actual: %.2f, theta: %.2f, theta_elec: %.2f\r\n",
+        //                counter, target_vel_rads, current_vel_rads, target_iq, i_q, prev_theta_mech, global_theta_elec);
 
-      CDC_Transmit_FS((uint8_t*)usb_buffer, len);
-      counter++;
-    }
+      //CDC_Transmit_FS((uint8_t*)usb_buffer, len);
+      //counter++;
+    //}
 	  // 50Hz telemetry
 	  osDelay(30);
   }

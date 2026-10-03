@@ -80,7 +80,7 @@ volatile float target_id = 0.0f;
 volatile float target_iq = 0.0f;
 // Velocity PI Controller states
 volatile float current_vel_rads = 0.0f;
-volatile float target_vel_rads = 10.0f; // target 10 rad/s (~95rpm) for testing
+volatile float target_vel_rads = 20.0f; // target 10 rad/s (~95rpm) for testing
 volatile float prev_theta_mech = 0.0f;
 volatile float vel_integral = 0.0f;
 volatile float ramped_target_vel = 0.0f;
@@ -295,7 +295,7 @@ static void MX_ADC1_Init(void)
   sConfigInjected.InjectedChannel = ADC_CHANNEL_0;
   sConfigInjected.InjectedRank = 1;
   sConfigInjected.InjectedNbrOfConversion = 1;
-  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_15CYCLES;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_28CYCLES;
   sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONVEDGE_RISING;
   sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJECCONV_T1_TRGO;
   sConfigInjected.AutoInjectedConv = DISABLE;
@@ -340,7 +340,7 @@ static void MX_ADC2_Init(void)
   sConfigInjected.InjectedChannel = ADC_CHANNEL_1;
   sConfigInjected.InjectedRank = 1;
   sConfigInjected.InjectedNbrOfConversion = 1;
-  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_15CYCLES;
+  sConfigInjected.InjectedSamplingTime = ADC_SAMPLETIME_28CYCLES;
   sConfigInjected.ExternalTrigInjecConvEdge = ADC_EXTERNALTRIGINJECCONVEDGE_RISING;
   sConfigInjected.ExternalTrigInjecConv = ADC_EXTERNALTRIGINJECCONV_T1_TRGO;
   sConfigInjected.AutoInjectedConv = DISABLE;
@@ -660,7 +660,7 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
     static uint8_t kickstart_active = 0;
     static uint32_t kickstart_counter = 0;
     const float KICK_CURRENT = 0.5f;
-    const uint32_t KICK_MAX_TICKS = 4000;
+    const uint32_t KICK_MAX_TICKS = 2000;
     const float BREAKAWAY_VEL_THRESH = 1.0f;
 
 		if (motor_state == STATE_OFF) {
@@ -836,13 +836,13 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
 		float duty_b = 0.5f + (v_b + v_offset);
 		float duty_c = 0.5f + (v_c + v_offset);
 
-		// clamp duties to 0.05 - 0.95 to allow drv8301 bootstrap capacitors to charge
-		if (duty_a > 0.95f) duty_a = 0.95f;
-		if (duty_a < 0.05f) duty_a = 0.05f;
-		if (duty_b > 0.95f) duty_b = 0.95f;
-		if (duty_b < 0.05f) duty_b = 0.05f;
-		if (duty_c > 0.95f) duty_c = 0.95f;
-		if (duty_c < 0.05f) duty_c = 0.05f;
+		// clamp duties to 0.1 - 0.9
+		if (duty_a > 0.9f) duty_a = 0.9f;
+		if (duty_a < 0.1f) duty_a = 0.1f;
+		if (duty_b > 0.9f) duty_b = 0.9f;
+		if (duty_b < 0.1f) duty_b = 0.1f;
+		if (duty_c > 0.9f) duty_c = 0.9f;
+		if (duty_c < 0.1f) duty_c = 0.1f;
 
 		// write duty cycles to timers
 		TIM1->CCR1 = (uint32_t)(duty_a * 4199.0f);
@@ -883,10 +883,10 @@ void StartCurStreamTask(void *argument) {
       if (result == USBD_OK) {
         cur_stream_tail = (uint16_t)((cur_stream_tail + 1) % CUR_STREAM_BUF_LEN);
       } else {
-        osDelay(10); // USB busy so retry same sample, don't drop or corrupt it
+        osDelay(1); // USB busy so retry same sample, don't drop or corrupt it
       }
     }
-    osDelay(10);
+    osDelay(1);
   }
 }
 /* USER CODE END 4 */

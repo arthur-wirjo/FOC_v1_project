@@ -79,7 +79,7 @@ volatile float target_id = 0.0f;
 volatile float target_iq = 0.0f;
 // Velocity PI Controller states
 volatile float current_vel_rads = 0.0f;
-volatile float target_vel_rads = -10.0f; // target 10 rad/s (~95rpm) for testing
+volatile float target_vel_rads = 20.0f; // target 10 rad/s (~95rpm) for testing
 volatile float prev_theta_mech = 0.0f;
 volatile float vel_integral = 0.0f;
 volatile float ramped_target_vel = 0.0f;
@@ -620,7 +620,7 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
     static uint8_t kickstart_active = 0;
     static uint32_t kickstart_counter = 0;
     const float KICK_CURRENT = 0.5f;
-    const uint32_t KICK_MAX_TICKS = 4000;
+    const uint32_t KICK_MAX_TICKS = 2000;
     const float BREAKAWAY_VEL_THRESH = 1.0f;
 
 		if (motor_state == STATE_OFF) {
@@ -658,7 +658,7 @@ void HAL_ADCEx_InjectedConvCpltCallback(ADC_HandleTypeDef *hadc) {
         target_id = 0.35f;
         float damp_iq = -0.3f * current_vel_rads;
         if (damp_iq > 0.3f) damp_iq = 0.3f;
-        if (damp_iq < 0.3f) damp_iq = -0.3f;
+        if (damp_iq < -0.3f) damp_iq = -0.3f;
         target_iq = damp_iq; 
       }
 

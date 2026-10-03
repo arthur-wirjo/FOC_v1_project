@@ -13,7 +13,7 @@ I started this project to deeply understand the hardware architecture of modern,
 
 The system is split into a 4-layer main power board (handling the MCU and 60V power stage) and a separate 2-layer magnetic encoder board mounted directly to the motor. This approach kept the overall footprint compact and reduced manufacturing costs.
 
-As the project progressed, it evolved beyond "build a VESC clone" into writing a full custom bare-metal FOC firmware stack from scratch — more on why below. As of 28 September 2026, the board runs true closed-loop Field-Oriented Control, with working current control and smooth closed-loop velocity control of the motor.
+As the project progressed, it evolved beyond "build a VESC clone" into writing a full custom bare-metal FOC firmware stack from scratch. As of October 3, 2026, the board successfully runs closed-loop Field-Oriented Control, achieving smooth velocity control. Having fulfilled its purpose as a deep-dive educational tool into power electronics and motor control theory, **this project is now officially concluded**. The repository remains as a documented post-mortem and reference for DIY FOC development.
 
 ## Key Features
 
@@ -91,9 +91,17 @@ After first achieving open-loop commutation, I later struggled to reproduce it a
 ### Missing Bulk Decoupling Capacitor (Current Sensing Noise)
 While debugging noisy phase current readings, a senior pointed out that the DRV8301's built-in 5V buck converter was missing a bulk decoupling capacitor on my board. Without it, switching-induced ripple on the 5V rail was likely feeding through to the gate driver's built-in current sense amplifiers, degrading signal quality. I added the missing capacitor directly onto the existing V1.3 board (Frankenstein-style, dead-bug soldered), which noticeably cleaned up the current readings enough for stable closed-loop control. This will be properly integrated into the layout for the next PCB revision.
 
+### Current Sensing Offsets and Phase Anomalies (The Final Hurdle)
+While closed-loop velocity control was achieved, the final hurdle involved anomalies in the low-side current sensing. Through telemetry analysis under load, I observed three distinct issues:
+1. **DC Offsets:** Despite software calibration, i_a exhibited a heavy positive offset (min -0.05A, max 0.35A), i_b (calculated) had a heavy negative offset, and i_c was relatively balanced. This points to inherent analog front-end biases or layout-induced ground offsets.
+2. **Noise:** Low-side sensing is notoriously susceptible to switching noise. Even with ADC sampling synchronized to the timer's update event (the "quiet window"), the raw data remained spiky, pushing the limits of the software's low-pass filters.
+3. **The 180-Degree Phase Shift Anomaly:** Telemetry revealed that i_a and i_c appeared to be roughly 180 degrees out of phase, rather than the expected 120 degrees. Initially, one might suspect a flipped differential pair on the PCB, but mathematically, inverting a 120-degree signal results in a 300-degree (-60 degree) phase shift, not 180 degrees. This anomaly is much more likely an artifact of severe layout-induced noise, ground bounce, or the inherent limitations of low-side current sensing on a noisy DIY board skewing the reconstructed waveforms.
+
+**Lesson learned:** Mixed-signal PCB layout for high-current switching requires extreme care. For V2, I would transition to in-line current sensing with dedicated isolated amplifiers, ensure perfectly matched differential pair routing for the shunts, and implement a more robust analog filtering stage.
+
 ## Custom Firmware Development
 
-Since abandoning VESC firmware, I've been built a custom bare-metal firmware stack using STM32CubeMX, STM32CubeIDE, and FreeRTOS (for telemetry and state management), with the actual FOC control loop implemented as a hardware-timer/ADC-interrupt-driven routine.
+Since abandoning VESC firmware, I built a custom bare-metal firmware stack using STM32CubeMX, STM32CubeIDE, and FreeRTOS (for telemetry and state management), with the actual FOC control loop implemented as a hardware-timer/ADC-interrupt-driven routine.
 
 ### MCU Pinout
 
@@ -170,15 +178,15 @@ Since abandoning VESC firmware, I've been built a custom bare-metal firmware sta
 9. ✅ Closed-loop current control achieved
 10. ✅ Closed-loop velocity control achieved — smooth motor spin under true FOC
 
-### Current Firmware State
-* Closed-loop Field-Oriented Control is working on hardware: the motor spins smoothly under closed-loop velocity control, and current can be commanded and regulated directly.
-* Open-loop SPWM commutation, ADC-synchronized current sensing, and gate driver configuration are all validated and stable.
-* Next steps: Implement automatic misalignment calibration, eccentricity calibration, current and voltage PI tuning, and automatic motor R and L measurement. 
+### Current Firmware State (Final)
+* Closed-loop Field-Oriented Control is working on hardware: the motor spins smoothly under closed-loop velocity control.
+* Open-loop SPWM commutation, ADC-synchronized current sensing, and gate driver configuration are validated.
+* **Future Improvements (Left as an exercise for V2):** Transitioning to in-line current sensing to resolve the noise and phase shift anomalies, implementing automatic motor R and L measurement, and adding trajectory generation (slew-rate limiting) for smoother bidirectional startups.
 
 ## Current Status
 * **V1.0 & V1.1:** Deprecated — used for footprint verification and short-circuit debugging (solder wicking clearance issue, mislabeled MOSFET footprint).
 * **V1.2:** Deprecated — resolved the phase-short issues from V1.0/V1.1, but had a USB differential pair wiring mistake (DP/DN crossed) that prevented USB enumeration.
-* **V1.3:** Current hardware revision. USB wiring fixed and verified via custom bare-metal USB CDC test firmware. Pivoted away from VESC firmware after diagnosing a VBUS-sensing incompatibility, to a fully custom bare-metal FOC firmware stack. Closed-loop FOC is achieved and validated on hardware. Smooth closed-loop velocity control and current control are both working, following a fix for missing 5V rail decoupling.
+* **V1.3 (Final):** USB wiring fixed and verified via custom bare-metal USB CDC test firmware. Pivoted to a fully custom bare-metal FOC firmware stack. Closed-loop FOC achieved and validated on hardware. Smooth closed-loop velocity control is working. The project is now officially closed, serving as a successful proof-of-concept and an invaluable learning experience in embedded systems and power electronics.
 
 ## Project Timeline
 
@@ -202,4 +210,5 @@ Since abandoning VESC firmware, I've been built a custom bare-metal firmware sta
 | Sep 22 | ADC current sensing achieved (noisy — later traced to missing decoupling capacitor) |
 | Sep 24 | Fixed missing decoupling capacitor; current sensing quality improved |
 | Sep 25 | Closed-loop current control achieved |
-| **Sep 28** | **Closed-loop velocity control achieved — true FOC working** |
+| Sep 28 | Closed-loop velocity control achieved — true FOC working |
+| **Oct 3** | **Telemetry analysis completed. Project officially concluded and documented as a post-mortem.** |

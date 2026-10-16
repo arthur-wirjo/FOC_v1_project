@@ -1,9 +1,9 @@
 # DIY FOC Motor Controller V1: Custom Hardware & Firmware from Scratch 
 
-<img width="450" alt="FOC_v1 3_pic" src="https://github.com/user-attachments/assets/d8da7c35-ac1d-484f-9041-603ca0addf4d" />
-<img width="450" alt="FOC_v1 3_pic2" src="https://github.com/user-attachments/assets/219bfe0c-1c2c-4cdf-8738-d26fb6f9e2ab" />
-<img width="450" alt="FOC_v1 3_setup2" src="https://github.com/user-attachments/assets/b3ec1fc4-616c-4bb9-b928-0f4e2a09ef9d" />
-<img width="450" alt="FOC_v1 0-1 2" src="https://github.com/user-attachments/assets/ff5e3c55-ffe5-4131-902a-74e42b688a45" />
+<img width="300" alt="FOC_v1 3_pic" src="https://github.com/user-attachments/assets/d8da7c35-ac1d-484f-9041-603ca0addf4d" />
+<img width="300" alt="FOC_v1 3_pic2" src="https://github.com/user-attachments/assets/219bfe0c-1c2c-4cdf-8738-d26fb6f9e2ab" />
+<img width="300" alt="FOC_v1 3_setup2" src="https://github.com/user-attachments/assets/b3ec1fc4-616c-4bb9-b928-0f4e2a09ef9d" />
+<img width="300" alt="FOC_v1 0-1 2" src="https://github.com/user-attachments/assets/ff5e3c55-ffe5-4131-902a-74e42b688a45" />
 
 A custom-designed, 60V 50A Field Oriented Control (FOC) BLDC motor controller built from scratch. Designed for high-performance robotics, featuring a 4-layer power PCB, isolated USB telemetry, and CAN bus communication.
 

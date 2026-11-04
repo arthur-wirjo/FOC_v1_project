@@ -1,3 +1,7 @@
+# Kicad history and backups
+**/.history/
+**/*-backups/
+
 # Python virtual environments
 .venv/
 venv/

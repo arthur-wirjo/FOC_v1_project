@@ -1,0 +1,5 @@
+Reference,Qty,Value,Description,Manufacturer,MPN,Footprint
+C34,1,100nF,"0603, X7R, 25V",Samsung Electro-Mechanics,CL10B104KA8NNNC,C_0603_1608Metric
+J3,1,Enc_Enc_01x06,JST-GH 6-pin male header (SMD),JST,SM06B-GHS-TB,JST-GH_CONN_SM06B-GHS-TB_JST
+R27,1,10kΩ,"0603, 1%",FH,ABD03K1002FT,R_0603_1608Metric
+U9,1,AS5048A-HTSP,14-bit Magnetic Rotary Position Sensor,ams OSRAM,AS5048A-HTSP-500,AS5048A_TSSOP14_AMS
